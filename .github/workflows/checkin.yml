@@ -1,7 +1,8 @@
 name: AnyRouter 自动签到
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    # utc+8 的 9 点
+     - cron: '0 1 * * *'
   workflow_dispatch:
 
 jobs:
