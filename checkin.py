@@ -284,8 +284,8 @@ async def main():
 	total_count = len(accounts)
 	notification_content = []
 	current_balances = {}
-	need_notify = False  # 是否需要发送通知
-	balance_changed = False  # 余额是否有变化
+	need_notify = True  # 是否需要发送通知
+	balance_changed = True  # 余额是否有变化
 
 	for i, account in enumerate(accounts):
 		account_key = f'account_{i + 1}'
