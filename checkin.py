@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AnyRouter.top 自动签到脚本 (动态排序 & 格式优化版)
+AnyRouter.top 自动签到脚本 (动态排序 & 资金汇总版)
 """
 
 import asyncio
@@ -15,6 +15,7 @@ import httpx
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
+# 假设这些模块在你本地是存在的，保持引用不变
 from utils.config import AccountConfig, AppConfig, load_accounts_config
 from utils.notify import notify
 
@@ -56,14 +57,13 @@ def parse_cookies(cookies_data):
     return {}
 
 async def get_waf_cookies_with_playwright(account_name: str, login_url: str, required_cookies: list[str]):
-    # 为了减少日志刷屏，这里稍微精简了一下日志
     print(f'[处理中] [{account_name}] 正在获取 WAF cookies...')
     async with async_playwright() as p:
         import tempfile
         with tempfile.TemporaryDirectory() as temp_dir:
             context = await p.chromium.launch_persistent_context(
                 user_data_dir=temp_dir,
-                headless=False,
+                headless=False, # 如果在服务器运行建议改为 True，或者确保安装了相关依赖
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
                 viewport={'width': 1920, 'height': 1080},
                 args=['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--disable-web-security', '--disable-features=VizDisplayCompositor', '--no-sandbox'],
@@ -102,6 +102,7 @@ def get_user_info(client, headers, user_info_url: str):
             data = response.json()
             if data.get('success'):
                 user_data = data.get('data', {})
+                # 注意：这里已经是 float 类型
                 quota = round(user_data.get('quota', 0) / 500000, 2)
                 used_quota = round(user_data.get('used_quota', 0) / 500000, 2)
                 return {
@@ -176,7 +177,7 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
         client.close()
 
 async def main():
-    print('[系统] AnyRouter.top 自动签到 (动态列表排序版)')
+    print('[系统] AnyRouter.top 自动签到 (动态列表排序 + 资金汇总版)')
     print(f'[时间] {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
 
     app_config = AppConfig.load_from_env()
@@ -184,12 +185,14 @@ async def main():
     if not accounts: sys.exit(1)
     print(f'[信息] 共发现 {len(accounts)} 个账号')
 
-    # === 1. 定义结果列表 ===
-    # 用来存放处理好的数据对象: {'name': '1', 'msg': '...'}
+    # === 1. 定义结果列表 & 统计变量 ===
     results_list = []
-    
     success_count = 0
     current_balances = {}
+    
+    # 新增：总金额统计变量
+    total_quota_sum = 0.0
+    total_used_sum = 0.0
 
     # === 2. 遍历执行 ===
     for i, account in enumerate(accounts):
@@ -202,16 +205,17 @@ async def main():
             if success:
                 success_count += 1
 
-            # 构建消息内容
-            # 这里的格式就是你要的: [账号名称] \n 余额信息
             if user_info and user_info.get('success'):
                 current_balances[account_key] = {'quota': user_info['quota'], 'used': user_info['used_quota']}
+                # 新增：累加金额 (确保是数字)
+                total_quota_sum += float(user_info.get('quota', 0))
+                total_used_sum += float(user_info.get('used_quota', 0))
+                
                 msg_content = f"[{account_name}]\n{user_info['display']}"
             else:
                 error_msg = user_info.get('error', '未知错误') if user_info else '未知错误'
                 msg_content = f"[{account_name}]\n❌ 信息获取失败: {error_msg}"
             
-            # 将结果存入列表
             results_list.append({
                 'name': account_name,
                 'msg': msg_content
@@ -223,33 +227,42 @@ async def main():
                 'msg': f"[{account_name}]\n❌ 脚本执行异常: {str(e)[:30]}"
             })
 
-    # === 3. 智能排序 (核心逻辑) ===
-    # 这里的逻辑是：如果名字是纯数字(如 "10"), 按数字大小排
-    # 如果名字包含文字(如 "Account_1"), 按自然顺序排
+    # === 3. 智能排序 ===
     def natural_key(item):
         text = item['name']
-        # 尝试转为int，如果成功则按数字排，否则按字符串排
         return int(text) if text.isdigit() else text
 
-    # 执行排序
     results_list.sort(key=natural_key)
 
-    # === 4. 生成通知 ===
+    # === 4. 生成通知 (含汇总) ===
     # 提取排序后的消息文本
     final_content_lines = [item['msg'] for item in results_list]
+    
+    # 计算总资产
+    total_assets = total_quota_sum + total_used_sum
     
     summary = [
         '📊 签到统计:',
         f'✅ 成功: {success_count}/{len(accounts)}',
         f'❌ 失败: {len(accounts) - success_count}/{len(accounts)}',
+        '',  # 空行分隔
+        '💰 资金汇总:',
+        f'💵 可用总余额: ${total_quota_sum:.2f}',
+        f'🧾 已用总额: ${total_used_sum:.2f}',
+        f'💳 总资产(可用+已用): ${total_assets:.2f}',
     ]
-    if success_count == len(accounts): summary.append('🎉 全员通过！')
-    else: summary.append('⚠️ 部分失败')
+    
+    if success_count == len(accounts): 
+        summary.append('\n🎉 全员通过！')
+    else: 
+        summary.append('\n⚠️ 部分失败')
 
     time_info = f'[时间] {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
+    
+    # 组合最终消息: 时间 -> 明细 -> 汇总
     notify_content = '\n\n'.join([time_info, '\n'.join(final_content_lines), '\n'.join(summary)])
     
-    # 保存Hash (虽然我们强制通知，但还是存一下好)
+    # 保存Hash
     current_balance_hash = generate_balance_hash(current_balances)
     if current_balance_hash: save_balance_hash(current_balance_hash)
 
@@ -257,7 +270,10 @@ async def main():
     print(notify_content)
     print('='*30)
     
+    # 推送通知
     notify.push_message('AnyRouter 签到通知', notify_content, msg_type='text')
+    
+    # 只要有成功的就算 exit 0，避免 Github Action 频繁报错
     sys.exit(0 if success_count > 0 else 1)
 
 if __name__ == '__main__':
